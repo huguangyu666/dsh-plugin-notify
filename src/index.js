@@ -19,7 +19,7 @@ import { fileURLToPath } from 'node:url'
 
 export const name = 'dsh-plugin-notify'
 
-export const inject = ['commands', 'webServer', 'tools']
+export const inject = ['commands', 'webServer', 'tools', 'systemPrompt']
 
 const PACKAGE_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
 const PS1 = join(PACKAGE_ROOT, 'notify.ps1')
@@ -154,6 +154,53 @@ async function readBody(req) {
 }
 
 export function apply(ctx) {
+  // 系统提示词注入：让 agent 默认就有"主动通知用户"的习惯（不用每次教）。
+  // 工具指导区约定 order 100-199；可用 DSH_NOTIFY_INJECT_PROMPT=0 禁用。
+  if (process.env.DSH_NOTIFY_INJECT_PROMPT !== '0') {
+    ctx.systemPrompt?.section?.({
+      name: 'notify-user-guidance',
+      order: 100,
+      text: '你有 notify_user 工具（桌面通知 / 中文语音播报 / 提示音），用于主动联系用户。规则：\n' +
+        '1. 必须：任务出错、或需要用户注意与确认时，立即用 notify_user 通知用户\n' +
+        '2. 必须：完成任务需要多步操作或持续较长时间时，完成后用 notify_user 通知用户结果摘要\n' +
+        '3. 建议：用户可能不在电脑前时（长任务），用 speak 或 both 模式呼叫用户回来\n' +
+        '4. 例外：几秒就能完成的简单任务无需通知，避免打扰',
+    })
+  }
+
+  // 兜底：会话出错时自动通知（模型没调用 notify_user 也保证用户知道）
+  ctx.on?.('agent/error', (payload) => {
+    try {
+      const err = payload?.error
+      const detail = String(err?.message ?? err ?? '未知错误').slice(0, 200)
+      notify('both', 'dsh 任务出错', `会话 ${payload?.agent?.id ?? ''} 出错：${detail}`)
+    } catch (e) {
+      console.error('[notify] 出错自动通知失败:', e.message)
+    }
+  })
+
+  // 兜底：回合结束自动桌面通知（保证"任务完成必然知道"，不依赖模型自觉）。
+  // 可用 DSH_NOTIFY_ON_TURN_END=0 关闭。
+  if (process.env.DSH_NOTIFY_ON_TURN_END !== '0') {
+    ctx.on?.('agent/turn-stopping', (payload) => {
+      try {
+        const agent = payload?.agent
+        if (!agent?.session) return
+        let text = ''
+        for (const ev of agent.session.events) {
+          if (ev.type === 'assistant/message') {
+            const parts = (ev.data?.content ?? []).filter((b) => b.type === 'text').map((b) => b.text ?? '')
+            if (parts.length) text = parts.join('\n')
+          }
+        }
+        const summary = text.trim().slice(0, 200) || `会话 ${agent.id} 的回合已结束`
+        notify('toast', '任务完成', summary)
+      } catch (e) {
+        console.error('[notify] 完成自动通知失败:', e.message)
+      }
+    })
+  }
+
   // agent 工具：模型主动通知用户
   ctx.tools?.register?.({
     name: 'notify_user',
