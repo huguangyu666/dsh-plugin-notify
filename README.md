@@ -136,6 +136,7 @@ npm i dsh-plugin-notify
 
 ```bash
 npm run build   # esbuild 构建 lib/
+node test-mock.mjs  # mock 测试 14 项（工具/命令/路由注册、配置读写）
 # 单测后端：DSH_NOTIFY_PAYLOAD=$(node -e "console.log(Buffer.from(JSON.stringify({mode:'speak',title:'测试',message:'你好'})).toString('base64'))") powershell -File notify.ps1
 ```
 
