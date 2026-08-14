@@ -2,6 +2,8 @@
 
 DeepSeek Harness 插件：通知出口——让 agent 主动联系你。桌面通知 / 中文语音播报 / 提示音，Windows 本机零依赖。
 
+<img width="1168" height="1180" alt="image" src="https://github.com/user-attachments/assets/c226cc71-4f8d-4f38-b338-4f7d9583a230" />
+
 ## 功能
 
 - **系统提示词注入**：自动往所有 agent 的系统提示词注入主动通知规则（长任务完成 / 出错 / 需要你注意时用 notify_user），不用每次教；`DSH_NOTIFY_INJECT_PROMPT=0` 可禁用
