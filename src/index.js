@@ -214,31 +214,38 @@ const PAGE = `<!DOCTYPE html>
 <meta charset="utf-8">
 <title>dsh 通知测试</title>
 <style>
-:root { --bg:#0f1115; --panel:#171a21; --line:#262b36; --text:#d6dae2; --dim:#8b93a3;
-        --accent:#4f8cff; --ok:#3fb96f; --bad:#e5484d; }
-* { box-sizing:border-box; margin:0; padding:0; }
-body { background:var(--bg); color:var(--text); font:14px/1.6 "Segoe UI",system-ui,sans-serif; }
-header { display:flex; align-items:center; gap:14px; padding:14px 22px; border-bottom:1px solid var(--line); }
-header h1 { font-size:17px; font-weight:600; }
-header .sub { color:var(--dim); font-size:12px; }
-main { max-width:760px; margin:0 auto; padding:20px 22px; }
-.panel { background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:16px; margin-bottom:16px; }
-.panel h2 { font-size:14px; margin-bottom:12px; color:var(--dim); font-weight:600; }
-textarea { width:100%; background:#0f1115; border:1px solid var(--line); color:var(--text);
-  border-radius:6px; padding:10px; font-size:13px; outline:none; resize:vertical; min-height:70px; }
-textarea:focus { border-color:var(--accent); }
-input[type=number] { background:#0f1115; border:1px solid var(--line); color:var(--text); border-radius:6px;
-  padding:7px 10px; font-size:13px; outline:none; width:90px; }
-input:focus { border-color:var(--accent); }
-.row { display:flex; gap:10px; margin-top:12px; align-items:center; flex-wrap:wrap; }
-.switch-row { display:flex; align-items:center; gap:10px; margin:8px 0; font-size:13px; }
-.switch-row label { color:var(--dim); cursor:pointer; }
-button { background:var(--accent); border:none; color:#fff; border-radius:6px; padding:8px 18px; font-size:13px; cursor:pointer; }
-button.ghost { background:transparent; border:1px solid var(--line); color:var(--dim); }
-select { background:#0f1115; border:1px solid var(--line); color:var(--text); border-radius:6px; padding:8px 10px; font-size:13px; }
-#msg, #setmsg { color:var(--dim); font-size:12px; margin-top:10px; }
-.hint { color:var(--dim); font-size:12px; margin-top:8px; }
-.tpl-label { font-size:12px; color:var(--dim); margin-top:10px; }
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body { background: var(--dsw-alias-bg-base); color: var(--dsw-alias-label-primary);
+  font: 13px/1.6 var(--dsw-font-family, "Segoe UI", system-ui, sans-serif); }
+header { display: flex; align-items: center; gap: 14px; padding: 12px 22px;
+  border-bottom: 1px solid var(--dsw-alias-border-l2); }
+header h1 { font-size: 15px; font-weight: 600; color: var(--dsw-alias-label-primary); }
+header .sub { color: var(--dsw-alias-label-tertiary); font-size: 12px; }
+main { max-width: 720px; margin: 0 auto; padding: 18px 22px; }
+.panel { background: var(--dsw-alias-bg-module-platform); border: 1px solid var(--dsw-alias-border-l2);
+  border-radius: 10px; padding: 14px; margin-bottom: 14px; }
+.panel h2 { font-size: 13.5px; margin-bottom: 10px; color: var(--dsw-alias-label-secondary); font-weight: 600; }
+textarea { width: 100%; background: var(--dsw-alias-bg-base); border: 1px solid var(--dsw-alias-border-l2);
+  color: var(--dsw-alias-label-primary); border-radius: 6px; padding: 9px 11px; font-size: 13px;
+  outline: none; resize: vertical; min-height: 64px; }
+textarea:focus { border-color: var(--dsw-alias-brand-primary); }
+input[type=number] { background: var(--dsw-alias-bg-base); border: 1px solid var(--dsw-alias-border-l2);
+  color: var(--dsw-alias-label-primary); border-radius: 6px; padding: 6px 10px; font-size: 13px;
+  outline: none; width: 90px; }
+input:focus { border-color: var(--dsw-alias-brand-primary); }
+.row { display: flex; gap: 10px; margin-top: 10px; align-items: center; flex-wrap: wrap; }
+.switch-row { display: flex; align-items: center; gap: 10px; margin: 7px 0; font-size: 13px; }
+.switch-row label { color: var(--dsw-alias-label-secondary); cursor: pointer; }
+button { background: var(--dsw-alias-button-info-fill); border: none; color: var(--dsw-alias-label-inverse, #fff);
+  border-radius: 6px; padding: 7px 16px; font-size: 12.5px; cursor: pointer; }
+button:hover { background: var(--dsw-alias-button-info-hover); }
+button.ghost { background: transparent; border: 1px solid var(--dsw-alias-border-l2); color: var(--dsw-alias-label-secondary); }
+button.ghost:hover { background: var(--dsw-alias-interactive-bg-hover); }
+select { background: var(--dsw-alias-bg-base); border: 1px solid var(--dsw-alias-border-l2);
+  color: var(--dsw-alias-label-primary); border-radius: 6px; padding: 7px 10px; font-size: 13px; }
+#msg, #setmsg { color: var(--dsw-alias-label-tertiary); font-size: 12px; margin-top: 8px; }
+.hint { color: var(--dsw-alias-label-tertiary); font-size: 12px; margin-top: 6px; }
+.tpl-label { font-size: 12px; color: var(--dsw-alias-label-tertiary); margin-top: 10px; }
 </style>
 </head>
 <body>
