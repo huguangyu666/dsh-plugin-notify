@@ -1,5 +1,5 @@
 # dsh-plugin-notify
-
+[![Awesome DSH Plugin](https://awesome-dsh-plugin.com/badge.svg)](https://awesome-dsh-plugin.com)
 DeepSeek Harness 插件：通知出口——让 agent 主动联系你。桌面通知 / 中文语音播报 / 提示音，Windows 本机零依赖。
 
 <img width="1168" height="1180" alt="image" src="https://github.com/user-attachments/assets/c226cc71-4f8d-4f38-b338-4f7d9583a230" />
