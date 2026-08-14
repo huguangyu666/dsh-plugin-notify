@@ -19,12 +19,25 @@ if (-not $title) { $title = 'dsh 通知' }
 $message = [string]$cfg.message
 if (-not $message) { Write-Error 'message 为空'; exit 1 }
 
-# ── 提示音 ──
+# ── 提示音（自定义音效优先：~/.dsh/notify/sounds/<effect>.wav，缺省回退系统提示音）──
 if ($mode -in @('sound', 'both')) {
-    try {
-        [System.Media.SystemSounds]::Exclamation.Play() | Out-Null
-        Start-Sleep -Milliseconds 300
-    } catch { Write-Warning "提示音失败: $_" }
+    $effect = $env:DSH_NOTIFY_SOUND_EFFECT
+    if ($effect) {
+        $soundPath = Join-Path $env:USERPROFILE ('.dsh\notify\sounds\' + $effect + '.wav')
+        if (Test-Path $soundPath) {
+            try {
+                $player = New-Object System.Media.SoundPlayer($soundPath)
+                $player.PlaySync()
+            } catch { [System.Media.SystemSounds]::Exclamation.Play() | Out-Null }
+        } else {
+            [System.Media.SystemSounds]::Exclamation.Play() | Out-Null
+        }
+    } else {
+        try {
+            [System.Media.SystemSounds]::Exclamation.Play() | Out-Null
+            Start-Sleep -Milliseconds 300
+        } catch { Write-Warning "提示音失败: $_" }
+    }
 }
 
 # ── 语音播报（中文优先，离线 SAPI）──

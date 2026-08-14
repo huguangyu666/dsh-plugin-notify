@@ -65,7 +65,8 @@ function loadConfig() {
     callDelaySeconds: Number(process.env.DSH_NOTIFY_CALL_DELAY_SECONDS) || 60,
     onTurnEnd: process.env.DSH_NOTIFY_ON_TURN_END !== '0',
     autoCall: process.env.DSH_NOTIFY_AUTO_CALL !== '0',
-    boostVolume: false,
+    boostVolume: true,
+    soundEffect: process.env.DSH_NOTIFY_SOUND_EFFECT || 'explode',
     templates: { ...DEFAULT_TEMPLATES },
   }
   // 环境变量模板
@@ -81,6 +82,7 @@ function loadConfig() {
     if (typeof d.onTurnEnd === 'boolean') cfg.onTurnEnd = d.onTurnEnd
     if (typeof d.autoCall === 'boolean') cfg.autoCall = d.autoCall
     if (typeof d.boostVolume === 'boolean') cfg.boostVolume = d.boostVolume
+    if (typeof d.soundEffect === 'string' && ['explode','success','alarm','notify','system'].includes(d.soundEffect)) cfg.soundEffect = d.soundEffect
     if (d.templates && typeof d.templates === 'object') {
       for (const key of ['task_done', 'task_error', 'call_back']) {
         if (typeof d.templates[key] === 'string' && d.templates[key].trim()) cfg.templates[key] = d.templates[key].trim()
@@ -106,6 +108,7 @@ async function saveConfig(patch) {
     onTurnEnd: Boolean(patch.onTurnEnd),
     autoCall: Boolean(patch.autoCall),
     boostVolume: Boolean(patch.boostVolume),
+    soundEffect: patch.soundEffect ?? current.soundEffect,
     templates: {
       task_done: patch.templates?.task_done ?? current.templates.task_done,
       task_error: patch.templates?.task_error ?? current.templates.task_error,
@@ -178,7 +181,7 @@ function notify(mode, title, message) {
       encoding: 'utf8',
       timeout: 120000,
       windowsHide: true,
-      env: { ...process.env, DSH_NOTIFY_PAYLOAD: payload },
+      env: { ...process.env, DSH_NOTIFY_PAYLOAD: payload, DSH_NOTIFY_SOUND_EFFECT: loadConfig().soundEffect },
     })
     if (r.error) throw new Error(`PowerShell 启动失败: ${r.error.message}`)
     if (r.status !== 0) {
@@ -370,7 +373,8 @@ export function apply(ctx) {
       callDelaySeconds: z.number().default(60),
       onTurnEnd: z.boolean().default(true),
       autoCall: z.boolean().default(true),
-      boostVolume: z.boolean().default(false),
+      boostVolume: z.boolean().default(true),
+      soundEffect: z.string().default('explode'),
       templates: z.object({
         task_done: z.string().default(DEFAULT_TEMPLATES.task_done),
         task_error: z.string().default(DEFAULT_TEMPLATES.task_error),

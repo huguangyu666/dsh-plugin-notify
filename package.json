@@ -18,6 +18,7 @@
     "notify.ps1",
     "idle.ps1",
     "volume.py",
+    "sound.py",
     "cordis.patch.yml",
     "README.md",
     "LICENSE"

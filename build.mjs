@@ -36,5 +36,6 @@ if (!client.includes('__ModuleLoader__.load')) throw new Error('client bundle �
 if (!client.includes('settings.section')) throw new Error('client bundle 缺 settings.section 注册')
 if (!readFileSync('notify.ps1', 'utf8').includes('DSH_NOTIFY_PAYLOAD')) throw new Error('ps1 文件异常')
 if (!readFileSync('volume.py', 'utf8').includes('pycaw')) throw new Error('volume.py 异常')
+if (!readFileSync('sound.py', 'utf8').includes('make_explode')) throw new Error('sound.py 异常')
 console.log('构建完成：lib/index.js + lib/client.js（notify.ps1 / idle.ps1 / volume.py 随 files 进包）')
 console.log('host:', host.length, 'bytes | client:', client.length, 'bytes')
