@@ -4,10 +4,10 @@ DeepSeek Harness 插件：通知出口——让 agent 主动联系你。桌面�
 
 ## 功能
 
-- **系统提示词注入**：自动往所有 agent 的系统提示词注入主动通知规则（长任务完成 / 出错 / 需要你注意时用 notify_user），不用每次教； 可禁用
+- **系统提示词注入**：自动往所有 agent 的系统提示词注入主动通知规则（长任务完成 / 出错 / 需要你注意时用 notify_user），不用每次教；`DSH_NOTIFY_INJECT_PROMPT=0` 可禁用
 - **自动通知兜底**（不依赖模型自觉）：
   - 会话回合出错 → 自动语音 + 桌面通知
-  - 回合结束 → 自动桌面通知（ 关闭）
+  - 回合结束 → 自动桌面通知（`DSH_NOTIFY_ON_TURN_END=0` 关闭）
 
 - **agent 工具 `notify_user`**：模型自主决定何时通知你——长任务完成、出错、需要你确认、你不在电脑前时呼叫你回来（"任务做完了叫你"）
 - **命令 `/notify`**：`/notify <内容> [--speak|--sound|--toast]` 手动发通知
@@ -55,6 +55,8 @@ npm i dsh-plugin-notify
 | 变量 | 默认 | 说明 |
 |---|---|---|
 | `DSH_NOTIFY_DEFAULT_MODE` | `toast` | 默认通知方式（`toast` / `speak` / `sound` / `both`） |
+| `DSH_NOTIFY_INJECT_PROMPT` | `1` | 是否向系统提示词注入"主动通知"规则（`0` 关闭） |
+| `DSH_NOTIFY_ON_TURN_END` | `1` | 回合结束是否自动桌面通知（`0` 关闭） |
 
 ## 实现说明
 
