@@ -9,7 +9,7 @@ DeepSeek Harness 插件：通知出口——让 agent 主动联系你。桌面�
   - 会话回合出错 → 自动语音 + 桌面通知
   - 回合结束 → 立即桌面通知，进入 60 秒确认窗口：期间你在 dsh 发了消息（=看到了）则取消；没发 → 中文语音呼叫你（**无论你在不在电脑前**——用电脑没发现任务完成更需要语音打断提醒）；`DSH_NOTIFY_ON_TURN_END=0` 关闭全部
 
-- **agent 工具 `notify_user`**：**场景化调用**——模型只需传 `scene`（task_done / task_error / call_back）+ 可选 `summary`，文案由预设模板自动生成，不用自编语言；也可以 `message` 完全自定义
+- **agent 工具 `notify_user`**：模型想说啥说啥——把想说的话写进 `message` 自由发挥（如搞定了，报告放桌面了）；不写则按 `scene` 用默认文案
 - **命令 `/notify`**：`/notify <内容> [--speak|--sound|--toast]` 手动发通知
 - **测试页**：`http://<dsh地址>:<端口>/notify` 一键测试四种模式
 - **三种通道**（可组合）：
@@ -62,13 +62,13 @@ npm i dsh-plugin-notify
 
 ## 文案模板
 
-模型调用 `notify_user` 时不用自己编语言，按场景自动生成（支持 `{{summary}}` 结果摘要、`{{session}}` 会话 id 变量）：
+模型不写 `message` 时按场景用默认文案（写了 `message` 则完全自由发挥）。模板支持 `{{summary}}` / `{{session}}` 变量，默认不含：
 
 | 场景 | 默认文案 |
 |---|---|
-| `task_done` | 任务已经完成了，快回来看看结果吧{{summary}} |
-| `task_error` | 任务出错了，需要你处理一下{{summary}} |
-| `call_back` | 我需要你过来看看{{summary}} |
+| `task_done` | 任务已经完成了，快回来看看结果吧 |
+| `task_error` | 任务出错了，需要你处理一下 |
+| `call_back` | 我需要你过来看看 |
 
 自定义（优先级：配置文件 > 环境变量 > 默认）：
 

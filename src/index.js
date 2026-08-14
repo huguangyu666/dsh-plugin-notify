@@ -35,13 +35,13 @@ const CALL_DELAY_SECONDS = Number(process.env.DSH_NOTIFY_CALL_DELAY_SECONDS) || 
 /** 待确认的通知：sessionId -> { summary, responded, timer } */
 const pendingCalls = new Map()
 
-// ── 文案模板：模型调用时不用自编语言，按场景生成；可自定义 ──
+// ── 文案模板：模型不写 message 时的兜底文案；模型想说什么自己写 message ──
 // 优先级：~/.dsh/notify/templates.json > 环境变量 DSH_NOTIFY_TEMPLATE_* > 默认
-// 变量：{{summary}}（结果摘要，自动加"："前缀）、{{session}}（会话 id）
+// 变量：{{summary}}（结果摘要）、{{session}}（会话 id）——默认模板不含，想用可自定义
 const DEFAULT_TEMPLATES = {
-  task_done: '任务已经完成了，快回来看看结果吧{{summary}}',
-  task_error: '任务出错了，需要你处理一下{{summary}}',
-  call_back: '我需要你过来看看{{summary}}',
+  task_done: '任务已经完成了，快回来看看结果吧',
+  task_error: '任务出错了，需要你处理一下',
+  call_back: '我需要你过来看看',
 }
 
 function loadTemplates() {
@@ -226,8 +226,8 @@ export function apply(ctx) {
       order: 100,
       text: '你有 notify_user 工具（桌面通知 / 中文语音播报 / 提示音）和 user_activity 工具（查询用户是否在电脑前），用于主动联系用户。规则：\n' +
         '1. 必须：任务出错、或需要用户注意与确认时，立即用 notify_user 通知用户（scene 传 task_error）\n' +
-        '2. 必须：完成多步或较长时间的任务后，调用 notify_user（scene 传 task_done，summary 传一句话结果摘要）；若用户不在电脑前（user_activity 空闲超过 2 分钟），mode 用 speak 或 both 呼叫用户回来\n' +
-        '3. 调用 notify_user 时只需传 scene 和 summary，不要自己编整段文案（模板会自动生成）\n' +
+        '2. 必须：完成多步或较长时间的任务后，用 notify_user 通知用户；若用户不在电脑前（user_activity 空闲超过 2 分钟），mode 用 speak 或 both 呼叫用户回来\n' +
+        '3. 通知内容自己写进 message，想说啥说啥，像跟朋友说话一样自然（如"搞定了，报告放桌面了"）；不写 message 则用场景默认文案\n' +
         '4. 例外：几秒就能完成的简单任务无需通知，避免打扰',
     })
   }
@@ -273,7 +273,7 @@ export function apply(ctx) {
           const entry = { summary, responded: false, timer: null }
           entry.timer = setTimeout(() => {
             if (!entry.responded) {
-              notify('speak', '任务完成', renderTemplate(TEMPLATES.task_done, { summary: entry.summary.slice(0, 80) }))
+              notify('speak', '任务完成', renderTemplate(TEMPLATES.task_done))
               console.log(`[notify] 1 分钟未确认，语音呼叫（${sessionId}）`)
             }
             pendingCalls.delete(sessionId)
@@ -299,20 +299,19 @@ export function apply(ctx) {
     })
   }
 
-  // agent 工具：模型主动通知用户（场景化调用，文案由模板生成，无需自编语言）
+  // agent 工具：模型主动通知用户（想说什么写 message，自由发挥；不写用场景默认文案）
   ctx.tools?.register?.({
     name: 'notify_user',
-    description: '通过桌面通知 / 中文语音播报 / 提示音主动联系用户。传 scene 场景即可，文案自动按预设模板生成（不用自己编语言）。适合：任务完成、出错、需要用户注意或确认、呼叫用户回来。',
+    description: '通过桌面通知 / 中文语音播报 / 提示音主动联系用户。任务完成、出错、需要用户注意或确认、呼叫用户回来时使用。想说的话写进 message（自由发挥，语气自然即可）；不写则按 scene 用默认文案。',
     parameters: {
       type: 'object',
       properties: {
-        scene: { type: 'string', enum: ['task_done', 'task_error', 'call_back'], description: '通知场景：task_done=任务完成（默认）；task_error=出错；call_back=呼叫用户回来。文案用预设模板自动生成' },
-        summary: { type: 'string', description: '可选：一句话结果摘要（会拼进文案，如"报告已生成"）' },
-        message: { type: 'string', description: '可选：完全自定义内容（填了就不走模板）' },
+        message: { type: 'string', description: '你想对用户说的话（自由发挥，不用模板；语音播报会念出来，50 字内最佳）' },
+        scene: { type: 'string', enum: ['task_done', 'task_error', 'call_back'], description: '通知场景（不写 message 时决定默认文案）：task_done=任务完成（默认）；task_error=出错；call_back=呼叫用户回来' },
         mode: { type: 'string', enum: ['speak', 'toast', 'sound', 'both'], description: 'speak=语音播报（响亮，用户不在电脑前也能听到）；toast=桌面通知；sound=提示音；both=语音+桌面通知。默认 toast' },
         title: { type: 'string', description: '通知标题（默认 dsh 通知）' },
       },
-      required: ['scene'],
+      required: ['message'],
     },
     output: {
       schema: { type: 'object', additionalProperties: true, properties: {} },
