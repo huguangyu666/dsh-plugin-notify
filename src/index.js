@@ -13,7 +13,7 @@
  * 环境变量：DSH_NOTIFY_DEFAULT_MODE（默认通知方式：toast|speak|sound|both，默认 toast）
  */
 import { spawnSync } from 'node:child_process'
-import { existsSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -25,44 +25,78 @@ const PACKAGE_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
 const homeDir = process.env.USERPROFILE || process.env.HOME || ''
 const PS1 = join(PACKAGE_ROOT, 'notify.ps1')
 const IDLE_PS1 = join(PACKAGE_ROOT, 'idle.ps1')
-const DEFAULT_MODE = process.env.DSH_NOTIFY_DEFAULT_MODE || 'toast'
+const VOLUME_PY = join(PACKAGE_ROOT, 'volume.py')
 const VALID_MODES = ['toast', 'speak', 'sound', 'both']
 /** 语音播报最长字符（避免念太久） */
 const SPEAK_MAX_CHARS = 300
-/** 自动叫人：toast 发出后等待用户响应的秒数（期间用户在 dsh 发消息则取消） */
-const CALL_DELAY_SECONDS = Number(process.env.DSH_NOTIFY_CALL_DELAY_SECONDS) || 60
 
 /** 待确认的通知：sessionId -> { summary, responded, timer } */
 const pendingCalls = new Map()
 
-// ── 文案模板：模型不写 message 时的兜底文案；模型想说什么自己写 message ──
-// 优先级：~/.dsh/notify/templates.json > 环境变量 DSH_NOTIFY_TEMPLATE_* > 默认
-// 变量：{{summary}}（结果摘要）、{{session}}（会话 id）——默认模板不含，想用可自定义
+// ── 配置（~/.dsh/notify/config.json，面板可改；优先级：config.json > 环境变量 > 默认）──
+const CONFIG_FILE = join(homeDir, '.dsh', 'notify', 'config.json')
+
 const DEFAULT_TEMPLATES = {
   task_done: '任务已经完成了，快回来看看结果吧',
   task_error: '任务出错了，需要你处理一下',
   call_back: '我需要你过来看看',
 }
 
-function loadTemplates() {
-  const t = { ...DEFAULT_TEMPLATES }
+let _configCache = null
+
+function loadConfig() {
+  if (_configCache) return _configCache
+  const cfg = {
+    defaultMode: process.env.DSH_NOTIFY_DEFAULT_MODE || 'toast',
+    callDelaySeconds: Number(process.env.DSH_NOTIFY_CALL_DELAY_SECONDS) || 60,
+    onTurnEnd: process.env.DSH_NOTIFY_ON_TURN_END !== '0',
+    autoCall: process.env.DSH_NOTIFY_AUTO_CALL !== '0',
+    boostVolume: false,
+    templates: { ...DEFAULT_TEMPLATES },
+  }
+  // 环境变量模板
   for (const key of ['task_done', 'task_error', 'call_back']) {
     const env = process.env[`DSH_NOTIFY_TEMPLATE_${key.toUpperCase()}`]
-    if (env) t[key] = env
+    if (env) cfg.templates[key] = env
   }
+  // config.json（面板设置，最高优先级）
   try {
-    const file = join(homeDir, '.dsh', 'notify', 'templates.json')
-    if (existsSync(file)) {
-      const d = JSON.parse(readFileSync(file, 'utf8'))
+    const d = JSON.parse(readFileSync(CONFIG_FILE, 'utf8'))
+    if (typeof d.defaultMode === 'string' && VALID_MODES.includes(d.defaultMode)) cfg.defaultMode = d.defaultMode
+    if (Number.isFinite(d.callDelaySeconds) && d.callDelaySeconds > 0) cfg.callDelaySeconds = d.callDelaySeconds
+    if (typeof d.onTurnEnd === 'boolean') cfg.onTurnEnd = d.onTurnEnd
+    if (typeof d.autoCall === 'boolean') cfg.autoCall = d.autoCall
+    if (typeof d.boostVolume === 'boolean') cfg.boostVolume = d.boostVolume
+    if (d.templates && typeof d.templates === 'object') {
       for (const key of ['task_done', 'task_error', 'call_back']) {
-        if (typeof d[key] === 'string' && d[key].trim()) t[key] = d[key].trim()
+        if (typeof d.templates[key] === 'string' && d.templates[key].trim()) cfg.templates[key] = d.templates[key].trim()
       }
     }
-  } catch { /* 配置文件损坏时用默认 */ }
-  return t
+  } catch { /* 无配置或损坏时用默认 */ }
+  _configCache = cfg
+  return cfg
 }
 
-const TEMPLATES = loadTemplates()
+function saveConfig(patch) {
+  const current = loadConfig()
+  const next = {
+    defaultMode: patch.defaultMode ?? current.defaultMode,
+    callDelaySeconds: Number(patch.callDelaySeconds) > 0 ? Number(patch.callDelaySeconds) : current.callDelaySeconds,
+    onTurnEnd: Boolean(patch.onTurnEnd),
+    autoCall: Boolean(patch.autoCall),
+    boostVolume: Boolean(patch.boostVolume),
+    templates: {
+      task_done: patch.templates?.task_done ?? current.templates.task_done,
+      task_error: patch.templates?.task_error ?? current.templates.task_error,
+      call_back: patch.templates?.call_back ?? current.templates.call_back,
+    },
+  }
+  const dir = join(CONFIG_FILE, '..')
+  mkdirSync(dir, { recursive: true })
+  writeFileSync(CONFIG_FILE, JSON.stringify(next, null, 2) + '\n', 'utf8')
+  _configCache = null // 缓存失效，下次重新读
+  return next
+}
 
 /** 渲染模板：{{summary}} 自动加"："前缀；{{session}} 会话 id */
 function renderTemplate(tpl, vars = {}) {
@@ -74,6 +108,20 @@ function renderTemplate(tpl, vars = {}) {
     if (k === 'session') return String(vars.session ?? '')
     return m
   })
+}
+
+/** 音量增强：通知前调到最大，返回恢复函数（失败返回 null，不阻塞通知） */
+function volumeBoost() {
+  if (!existsSync(VOLUME_PY)) return null
+  try {
+    const r = spawnSync('python', [VOLUME_PY, 'boost'], { encoding: 'utf8', timeout: 15000, windowsHide: true })
+    if (r.status !== 0) return null
+    return () => {
+      try { spawnSync('python', [VOLUME_PY, 'restore'], { encoding: 'utf8', timeout: 15000, windowsHide: true }) } catch { /* 忽略恢复失败 */ }
+    }
+  } catch {
+    return null
+  }
 }
 
 /** 查询系统空闲秒数（用户键盘/鼠标无操作时长） */
@@ -92,7 +140,7 @@ function queryIdle() {
   return 0
 }
 
-/** 执行一次通知（同步，spawnSync 调 PowerShell） */
+/** 执行一次通知（同步，spawnSync 调 PowerShell；开启音量增强时先 boost 再恢复） */
 function notify(mode, title, message) {
   if (!VALID_MODES.includes(mode)) mode = 'toast'
   let text = String(message ?? '').trim()
@@ -102,23 +150,29 @@ function notify(mode, title, message) {
   }
   const payload = Buffer.from(JSON.stringify({ mode, title: String(title ?? 'dsh 通知'), message: text })).toString('base64')
   if (!existsSync(PS1)) throw new Error(`notify.ps1 不存在: ${PS1}`)
-  const r = spawnSync('powershell', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', PS1], {
-    encoding: 'utf8',
-    timeout: 120000,
-    windowsHide: true,
-    env: { ...process.env, DSH_NOTIFY_PAYLOAD: payload },
-  })
-  if (r.error) throw new Error(`PowerShell 启动失败: ${r.error.message}`)
-  if (r.status !== 0) {
-    const err = (r.stderr || '').trim() || (r.stdout || '').trim()
-    throw new Error(`通知失败: ${err.slice(0, 300)}`)
+  // 音量增强：调到最大 → 通知 → 恢复
+  const restore = loadConfig().boostVolume ? volumeBoost() : null
+  try {
+    const r = spawnSync('powershell', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', PS1], {
+      encoding: 'utf8',
+      timeout: 120000,
+      windowsHide: true,
+      env: { ...process.env, DSH_NOTIFY_PAYLOAD: payload },
+    })
+    if (r.error) throw new Error(`PowerShell 启动失败: ${r.error.message}`)
+    if (r.status !== 0) {
+      const err = (r.stderr || '').trim() || (r.stdout || '').trim()
+      throw new Error(`通知失败: ${err.slice(0, 300)}`)
+    }
+  } finally {
+    if (restore) restore()
   }
   return mode
 }
 
 /** 从原始输入解析模式 flag 与内容 */
 function parseFlags(raw) {
-  let mode = DEFAULT_MODE
+  let mode = loadConfig().defaultMode
   let rest = String(raw ?? '').trim()
   for (const flag of ['--speak', '--sound', '--toast', '--both']) {
     if (rest.includes(flag)) {
@@ -143,24 +197,30 @@ body { background:var(--bg); color:var(--text); font:14px/1.6 "Segoe UI",system-
 header { display:flex; align-items:center; gap:14px; padding:14px 22px; border-bottom:1px solid var(--line); }
 header h1 { font-size:17px; font-weight:600; }
 header .sub { color:var(--dim); font-size:12px; }
-main { max-width:640px; margin:0 auto; padding:20px 22px; }
-.panel { background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:16px; }
+main { max-width:760px; margin:0 auto; padding:20px 22px; }
+.panel { background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:16px; margin-bottom:16px; }
 .panel h2 { font-size:14px; margin-bottom:12px; color:var(--dim); font-weight:600; }
 textarea { width:100%; background:#0f1115; border:1px solid var(--line); color:var(--text);
-  border-radius:6px; padding:10px; font-size:13px; outline:none; resize:vertical; min-height:90px; }
+  border-radius:6px; padding:10px; font-size:13px; outline:none; resize:vertical; min-height:70px; }
 textarea:focus { border-color:var(--accent); }
+input[type=number] { background:#0f1115; border:1px solid var(--line); color:var(--text); border-radius:6px;
+  padding:7px 10px; font-size:13px; outline:none; width:90px; }
+input:focus { border-color:var(--accent); }
 .row { display:flex; gap:10px; margin-top:12px; align-items:center; flex-wrap:wrap; }
+.switch-row { display:flex; align-items:center; gap:10px; margin:8px 0; font-size:13px; }
+.switch-row label { color:var(--dim); cursor:pointer; }
 button { background:var(--accent); border:none; color:#fff; border-radius:6px; padding:8px 18px; font-size:13px; cursor:pointer; }
 button.ghost { background:transparent; border:1px solid var(--line); color:var(--dim); }
 select { background:#0f1115; border:1px solid var(--line); color:var(--text); border-radius:6px; padding:8px 10px; font-size:13px; }
-#msg { color:var(--dim); font-size:12px; margin-top:10px; }
+#msg, #setmsg { color:var(--dim); font-size:12px; margin-top:10px; }
 .hint { color:var(--dim); font-size:12px; margin-top:8px; }
+.tpl-label { font-size:12px; color:var(--dim); margin-top:10px; }
 </style>
 </head>
 <body>
 <header>
-  <h1>dsh 通知测试</h1>
-  <span class="sub">notify_user 工具 / /notify 命令 共用此后端</span>
+  <h1>dsh 通知</h1>
+  <span class="sub">notify_user 工具 / /notify 命令 / 自动通知共用此后端</span>
 </header>
 <main>
   <div class="panel">
@@ -178,6 +238,35 @@ select { background:#0f1115; border:1px solid var(--line); color:var(--text); bo
     </div>
     <div id="msg"></div>
   </div>
+
+  <div class="panel">
+    <h2>行为偏好</h2>
+    <div class="row">
+      <span style="color:var(--dim);font-size:13px">默认通知方式</span>
+      <select id="set-mode">
+        <option value="toast">桌面通知</option>
+        <option value="speak">语音播报</option>
+        <option value="sound">提示音</option>
+        <option value="both">语音 + 桌面</option>
+      </select>
+    </div>
+    <div class="row">
+      <span style="color:var(--dim);font-size:13px">确认窗口（秒，超时未互动则语音呼叫）</span>
+      <input type="number" id="set-delay" min="5" max="600">
+    </div>
+    <div class="switch-row"><input type="checkbox" id="set-turend"><label for="set-turend">回合结束自动通知（toast → 确认窗口 → 无人回应语音呼叫）</label></div>
+    <div class="switch-row"><input type="checkbox" id="set-autocall"><label for="set-autocall">确认窗口超时后语音呼叫用户</label></div>
+    <div class="switch-row"><input type="checkbox" id="set-boost"><label for="set-boost">通知时把音量调到最大，播完恢复（语音呼叫更响亮）</label></div>
+    <div class="tpl-label">通知文案模板（模型不写 message 时使用；支持 {{summary}} / {{session}} 变量）</div>
+    <textarea id="set-tpl-done" style="margin-top:6px"></textarea>
+    <textarea id="set-tpl-error" style="margin-top:6px"></textarea>
+    <textarea id="set-tpl-call" style="margin-top:6px"></textarea>
+    <div class="row">
+      <button onclick="saveSettings()">保存设置</button>
+      <span id="setmsg"></span>
+    </div>
+    <div class="hint">设置保存到 ~/.dsh/notify/config.json，立即生效，无需重启 dsh</div>
+  </div>
 </main>
 <script>
 const $ = s => document.querySelector(s);
@@ -194,6 +283,40 @@ async function demo() {
   $('#mode').value = 'both';
   await send();
 }
+async function loadSettings() {
+  try {
+    const r = await fetch('/notify/api/settings');
+    const d = await r.json();
+    if (!d.config) return;
+    const c = d.config;
+    $('#set-mode').value = c.defaultMode || 'toast';
+    $('#set-delay').value = c.callDelaySeconds || 60;
+    $('#set-turend').checked = !!c.onTurnEnd;
+    $('#set-autocall').checked = !!c.autoCall;
+    $('#set-boost').checked = !!c.boostVolume;
+    $('#set-tpl-done').value = c.templates?.task_done || '';
+    $('#set-tpl-error').value = c.templates?.task_error || '';
+    $('#set-tpl-call').value = c.templates?.call_back || '';
+  } catch(e) { $('#setmsg').textContent = '设置读取失败: ' + e.message; }
+}
+async function saveSettings() {
+  const body = {
+    defaultMode: $('#set-mode').value,
+    callDelaySeconds: Number($('#set-delay').value) || 60,
+    onTurnEnd: $('#set-turend').checked,
+    autoCall: $('#set-autocall').checked,
+    boostVolume: $('#set-boost').checked,
+    templates: {
+      task_done: $('#set-tpl-done').value.trim(),
+      task_error: $('#set-tpl-error').value.trim(),
+      call_back: $('#set-tpl-call').value.trim(),
+    },
+  };
+  const r = await fetch('/notify/api/settings', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body) });
+  const d = await r.json().catch(() => ({}));
+  $('#setmsg').textContent = r.ok ? '已保存，立即生效' : ('保存失败: ' + (d.error || r.status));
+}
+loadSettings();
 </script>
 </body>
 </html>`
@@ -248,7 +371,7 @@ export function apply(ctx) {
   // 发了消息（=看到了通知）则取消；没发 → 语音叫人。
   // 不依赖"用户是否在线"：用电脑没看到 toast 更应该叫（语音打断提醒）。
   // 开关：DSH_NOTIFY_ON_TURN_END=0 关闭全部。
-  if (process.env.DSH_NOTIFY_ON_TURN_END !== '0') {
+  if (loadConfig().onTurnEnd) {
     ctx.on?.('agent/turn-stopping', (payload) => {
       try {
         const agent = payload?.agent
@@ -266,18 +389,18 @@ export function apply(ctx) {
         notify('toast', '任务完成', summary)
 
         // 确认窗口：等 CALL_DELAY_SECONDS 秒，用户没发消息 → 语音叫人
-        if (process.env.DSH_NOTIFY_AUTO_CALL !== '0') {
+        if (loadConfig().autoCall) {
           const sessionId = agent.id
           const prev = pendingCalls.get(sessionId)
           if (prev?.timer) clearTimeout(prev.timer)
           const entry = { summary, responded: false, timer: null }
           entry.timer = setTimeout(() => {
             if (!entry.responded) {
-              notify('speak', '任务完成', renderTemplate(TEMPLATES.task_done))
+              notify('speak', '任务完成', renderTemplate(loadConfig().templates.task_done))
               console.log(`[notify] 1 分钟未确认，语音呼叫（${sessionId}）`)
             }
             pendingCalls.delete(sessionId)
-          }, CALL_DELAY_SECONDS * 1000)
+          }, loadConfig().callDelaySeconds * 1000)
           pendingCalls.set(sessionId, entry)
         }
       } catch (e) {
@@ -320,11 +443,12 @@ export function apply(ctx) {
     execute: async (args, exec) => {
       const scene = args.scene ?? 'task_done'
       const custom = String(args.message ?? '').trim()
-      const text = custom || renderTemplate(TEMPLATES[scene] ?? TEMPLATES.task_done, {
+      const cfg = loadConfig()
+      const text = custom || renderTemplate(cfg.templates[scene] ?? cfg.templates.task_done, {
         summary: String(args.summary ?? '').trim(),
         session: '',
       })
-      const mode = notify(args.mode ?? DEFAULT_MODE, args.title, text)
+      const mode = notify(args.mode ?? loadConfig().defaultMode, args.title, text)
       // 模型已主动通知 → 取消该系统兜底的待确认呼叫（避免 60 秒后重复叫）
       if (exec?.agent?.id) {
         const p = pendingCalls.get(exec.agent.id)
@@ -397,9 +521,32 @@ export function apply(ctx) {
     handler: async (req, res) => {
       try {
         const body = await readBody(req).catch(() => ({}))
-        const mode = String(body.mode ?? DEFAULT_MODE)
+        const mode = String(body.mode ?? loadConfig().defaultMode)
         const used = notify(mode, 'dsh 通知', String(body.text ?? ''))
         sendJson(res, 200, { ok: true, mode: used })
+      } catch (e) {
+        sendJson(res, 500, { error: e.message })
+      }
+    },
+  })
+
+  // 设置 API：GET 读配置 / POST 保存配置（面板用）
+  ctx.webServer.register({
+    kind: 'exact',
+    path: '/notify/api/settings',
+    handler: async (req, res) => {
+      try {
+        if (req.method === 'GET') {
+          sendJson(res, 200, { config: loadConfig() })
+          return
+        }
+        if (req.method === 'POST') {
+          const body = await readBody(req).catch(() => ({}))
+          const next = saveConfig(body)
+          sendJson(res, 200, { ok: true, config: next })
+          return
+        }
+        sendJson(res, 405, { error: 'method not allowed' })
       } catch (e) {
         sendJson(res, 500, { error: e.message })
       }

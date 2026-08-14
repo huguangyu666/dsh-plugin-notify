@@ -11,7 +11,8 @@ DeepSeek Harness 插件：通知出口——让 agent 主动联系你。桌面�
 
 - **agent 工具 `notify_user`**：模型想说啥说啥——把想说的话写进 `message` 自由发挥（如搞定了，报告放桌面了）；不写则按 `scene` 用默认文案
 - **命令 `/notify`**：`/notify <内容> [--speak|--sound|--toast]` 手动发通知
-- **测试页**：`http://<dsh地址>:<端口>/notify` 一键测试四种模式
+- **设置面板**：`http://<dsh地址>:<端口>/notify` 可配置行为偏好（默认通知方式 / 确认窗口秒数 / 自动通知开关 / 语音呼叫开关 / 音量增强 / 文案模板），保存即生效，无需重启
+- **音量增强**：可选——通知时自动把系统音量调到最大，播报完恢复原音量（适合怕错过呼叫的场景，不是每个人都喜欢所以默认关闭）
 - **三种通道**（可组合）：
   - `toast` 桌面通知（NotifyIcon 气泡，无额外模块）
   - `speak` 中文语音播报（PowerShell SAPI 离线 TTS，优先中文语音）
@@ -58,7 +59,7 @@ npm i dsh-plugin-notify
 | `DSH_NOTIFY_INJECT_PROMPT` | `1` | 是否向系统提示词注入"主动通知"规则（`0` 关闭） |
 | `DSH_NOTIFY_ON_TURN_END` | `1` | 回合结束是否自动通知（`0` 关闭全部） |
 | `DSH_NOTIFY_CALL_DELAY_SECONDS` | `60` | toast 发出后等待用户响应的秒数，超时未互动则语音呼叫 |
-| `DSH_NOTIFY_TEMPLATE_DONE` 等 | 默认模板 | 文案模板（task_done / task_error / call_back），也可写 `~/.dsh/notify/templates.json` 覆盖 |
+| `DSH_NOTIFY_TEMPLATE_DONE` 等 | 默认模板 | 文案模板（task_done / task_error / call_back），也可用设置面板或 `~/.dsh/notify/config.json` 覆盖 |
 
 ## 文案模板
 
@@ -70,14 +71,27 @@ npm i dsh-plugin-notify
 | `task_error` | 任务出错了，需要你处理一下 |
 | `call_back` | 我需要你过来看看 |
 
-自定义（优先级：配置文件 > 环境变量 > 默认）：
+自定义（设置面板 / 配置文件 `~/.dsh/notify/config.json` > 环境变量 > 默认）：
 
 ```bash
 # 方式一：配置文件 ~/.dsh/notify/templates.json
 # {"task_done": "搞定啦，任务完成了{{summary}}"}
 # 方式二：环境变量
 # DSH_NOTIFY_TEMPLATE_DONE="搞定啦，任务完成了{{summary}}"
-```## 实现说明
+```## 设置面板
+
+浏览器打开 `/notify` 可配置所有行为偏好，保存到 `~/.dsh/notify/config.json` 立即生效：
+
+| 配置 | 说明 |
+|---|---|
+| 默认通知方式 | 模型/命令不指定时的默认模式 |
+| 确认窗口（秒） | toast 发出后等待用户回应的秒数，超时未互动则语音呼叫（默认 60） |
+| 回合结束自动通知 | 开关（默认开） |
+| 超时语音呼叫 | 开关（默认开） |
+| 音量增强 | 通知时把系统音量调到最大，播完恢复（默认关） |
+| 文案模板 | 三个场景的通知文案，支持 `{{summary}}` / `{{session}}` 变量 |
+
+## 实现说明
 
 - 后端是单文件 `notify.ps1`（随包分发），通过环境变量 `DSH_NOTIFY_PAYLOAD` 接收 base64 编码的 JSON（避免命令行中文编码问题）
 - 语音用系统 SAPI：自动选择 `zh-CN` 语音（如 Microsoft Huihui Desktop），无中文语音时回退默认
