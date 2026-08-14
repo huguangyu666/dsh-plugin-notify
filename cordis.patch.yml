@@ -1,0 +1,4 @@
+# dsh-plugin-notify bundle patch：挂载插件自身
+- insert:
+    - id: notify
+      name: 'dsh-plugin-notify'
