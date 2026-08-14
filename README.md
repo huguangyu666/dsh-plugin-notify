@@ -25,6 +25,20 @@ DeepSeek Harness 插件：通知出口——让 agent 主动联系你。桌面�
 
 ## 安装
 
+**方式一：官方命令（推荐）**
+
+```bash
+# 装进 web profile（自动 reconcile dsh.profile.bundles）
+dsh plugin --profile web add dsh-plugin-notify
+dsh web   # 重启生效
+```
+
+**方式二：商店一键安装**
+
+装 [dsh-store](https://github.com/huguangyu666/dsh-store)，打开「插件商店」搜索安装。
+
+**方式三：手动**
+
 ```bash
 npm i dsh-plugin-notify
 ```
