@@ -62,19 +62,22 @@ npm i dsh-plugin-notify
 
 ## 文案模板
 
-模型调用  时不用自己编语言，按场景自动生成（支持  结果摘要、 会话 id 变量）：
+模型调用 `notify_user` 时不用自己编语言，按场景自动生成（支持 `{{summary}}` 结果摘要、`{{session}}` 会话 id 变量）：
 
 | 场景 | 默认文案 |
 |---|---|
-|  | 任务已经完成了，快回来看看结果吧{{summary}} |
-|  | 任务出错了，需要你处理一下{{summary}} |
-|  | 我需要你过来看看{{summary}} |
+| `task_done` | 任务已经完成了，快回来看看结果吧{{summary}} |
+| `task_error` | 任务出错了，需要你处理一下{{summary}} |
+| `call_back` | 我需要你过来看看{{summary}} |
 
 自定义（优先级：配置文件 > 环境变量 > 默认）：
 
-
-
-## 实现说明
+```bash
+# 方式一：配置文件 ~/.dsh/notify/templates.json
+# {"task_done": "搞定啦，任务完成了{{summary}}"}
+# 方式二：环境变量
+# DSH_NOTIFY_TEMPLATE_DONE="搞定啦，任务完成了{{summary}}"
+```## 实现说明
 
 - 后端是单文件 `notify.ps1`（随包分发），通过环境变量 `DSH_NOTIFY_PAYLOAD` 接收 base64 编码的 JSON（避免命令行中文编码问题）
 - 语音用系统 SAPI：自动选择 `zh-CN` 语音（如 Microsoft Huihui Desktop），无中文语音时回退默认
