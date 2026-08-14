@@ -22,6 +22,7 @@ export const name = 'dsh-plugin-notify'
 export const inject = ['commands', 'webServer', 'tools', 'systemPrompt']
 
 const PACKAGE_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
+const homeDir = process.env.USERPROFILE || process.env.HOME || ''
 const PS1 = join(PACKAGE_ROOT, 'notify.ps1')
 const IDLE_PS1 = join(PACKAGE_ROOT, 'idle.ps1')
 const DEFAULT_MODE = process.env.DSH_NOTIFY_DEFAULT_MODE || 'toast'
@@ -33,6 +34,47 @@ const CALL_DELAY_SECONDS = Number(process.env.DSH_NOTIFY_CALL_DELAY_SECONDS) || 
 
 /** 待确认的通知：sessionId -> { summary, responded, timer } */
 const pendingCalls = new Map()
+
+// ── 文案模板：模型调用时不用自编语言，按场景生成；可自定义 ──
+// 优先级：~/.dsh/notify/templates.json > 环境变量 DSH_NOTIFY_TEMPLATE_* > 默认
+// 变量：{{summary}}（结果摘要，自动加"："前缀）、{{session}}（会话 id）
+const DEFAULT_TEMPLATES = {
+  task_done: '任务已经完成了，快回来看看结果吧{{summary}}',
+  task_error: '任务出错了，需要你处理一下{{summary}}',
+  call_back: '我需要你过来看看{{summary}}',
+}
+
+function loadTemplates() {
+  const t = { ...DEFAULT_TEMPLATES }
+  for (const key of ['task_done', 'task_error', 'call_back']) {
+    const env = process.env[`DSH_NOTIFY_TEMPLATE_${key.toUpperCase()}`]
+    if (env) t[key] = env
+  }
+  try {
+    const file = join(homeDir, '.dsh', 'notify', 'templates.json')
+    if (existsSync(file)) {
+      const d = JSON.parse(readFileSync(file, 'utf8'))
+      for (const key of ['task_done', 'task_error', 'call_back']) {
+        if (typeof d[key] === 'string' && d[key].trim()) t[key] = d[key].trim()
+      }
+    }
+  } catch { /* 配置文件损坏时用默认 */ }
+  return t
+}
+
+const TEMPLATES = loadTemplates()
+
+/** 渲染模板：{{summary}} 自动加"："前缀；{{session}} 会话 id */
+function renderTemplate(tpl, vars = {}) {
+  return String(tpl).replace(/\{\{(\w+)\}\}/g, (m, k) => {
+    if (k === 'summary') {
+      const s = String(vars.summary ?? '').trim()
+      return s ? `：${s}` : ''
+    }
+    if (k === 'session') return String(vars.session ?? '')
+    return m
+  })
+}
 
 /** 查询系统空闲秒数（用户键盘/鼠标无操作时长） */
 function queryIdle() {
@@ -183,9 +225,9 @@ export function apply(ctx) {
       name: 'notify-user-guidance',
       order: 100,
       text: '你有 notify_user 工具（桌面通知 / 中文语音播报 / 提示音）和 user_activity 工具（查询用户是否在电脑前），用于主动联系用户。规则：\n' +
-        '1. 必须：任务出错、或需要用户注意与确认时，立即用 notify_user 通知用户\n' +
-        '2. 必须：任务耗时超过约 1 分钟完成时，调用 user_activity 查询用户是否在电脑前；若用户不在（空闲超过 2 分钟），用 notify_user 的 speak 或 both 模式呼叫用户回来，并简述结果\n' +
-        '3. 建议：用户可能不在电脑前时，用 speak 或 both 模式而非仅 toast\n' +
+        '1. 必须：任务出错、或需要用户注意与确认时，立即用 notify_user 通知用户（scene 传 task_error）\n' +
+        '2. 必须：完成多步或较长时间的任务后，调用 notify_user（scene 传 task_done，summary 传一句话结果摘要）；若用户不在电脑前（user_activity 空闲超过 2 分钟），mode 用 speak 或 both 呼叫用户回来\n' +
+        '3. 调用 notify_user 时只需传 scene 和 summary，不要自己编整段文案（模板会自动生成）\n' +
         '4. 例外：几秒就能完成的简单任务无需通知，避免打扰',
     })
   }
@@ -231,7 +273,7 @@ export function apply(ctx) {
           const entry = { summary, responded: false, timer: null }
           entry.timer = setTimeout(() => {
             if (!entry.responded) {
-              notify('speak', '任务完成', `任务已经完成了，快回来看看结果吧：${entry.summary.slice(0, 80)}`)
+              notify('speak', '任务完成', renderTemplate(TEMPLATES.task_done, { summary: entry.summary.slice(0, 80) }))
               console.log(`[notify] 1 分钟未确认，语音呼叫（${sessionId}）`)
             }
             pendingCalls.delete(sessionId)
@@ -257,26 +299,44 @@ export function apply(ctx) {
     })
   }
 
-  // agent 工具：模型主动通知用户
+  // agent 工具：模型主动通知用户（场景化调用，文案由模板生成，无需自编语言）
   ctx.tools?.register?.({
     name: 'notify_user',
-    description: '通过桌面通知 / 中文语音播报 / 提示音主动联系用户。适合：长任务完成、出错、需要用户注意或确认、用户可能不在电脑前时呼叫用户回来。',
+    description: '通过桌面通知 / 中文语音播报 / 提示音主动联系用户。传 scene 场景即可，文案自动按预设模板生成（不用自己编语言）。适合：任务完成、出错、需要用户注意或确认、呼叫用户回来。',
     parameters: {
       type: 'object',
       properties: {
-        message: { type: 'string', description: '通知内容，一句话说清楚（语音播报会念出来，控制在 50 字内最佳）' },
+        scene: { type: 'string', enum: ['task_done', 'task_error', 'call_back'], description: '通知场景：task_done=任务完成（默认）；task_error=出错；call_back=呼叫用户回来。文案用预设模板自动生成' },
+        summary: { type: 'string', description: '可选：一句话结果摘要（会拼进文案，如"报告已生成"）' },
+        message: { type: 'string', description: '可选：完全自定义内容（填了就不走模板）' },
         mode: { type: 'string', enum: ['speak', 'toast', 'sound', 'both'], description: 'speak=语音播报（响亮，用户不在电脑前也能听到）；toast=桌面通知；sound=提示音；both=语音+桌面通知。默认 toast' },
         title: { type: 'string', description: '通知标题（默认 dsh 通知）' },
       },
-      required: ['message'],
+      required: ['scene'],
     },
     output: {
       schema: { type: 'object', additionalProperties: true, properties: {} },
       render: (args, value) => [{ type: 'text', text: `已通知用户（${value.mode}）` }],
     },
-    execute: async (args) => {
-      const mode = notify(args.mode ?? DEFAULT_MODE, args.title, args.message)
-      return { mode }
+    execute: async (args, exec) => {
+      const scene = args.scene ?? 'task_done'
+      const custom = String(args.message ?? '').trim()
+      const text = custom || renderTemplate(TEMPLATES[scene] ?? TEMPLATES.task_done, {
+        summary: String(args.summary ?? '').trim(),
+        session: '',
+      })
+      const mode = notify(args.mode ?? DEFAULT_MODE, args.title, text)
+      // 模型已主动通知 → 取消该系统兜底的待确认呼叫（避免 60 秒后重复叫）
+      if (exec?.agent?.id) {
+        const p = pendingCalls.get(exec.agent.id)
+        if (p && !p.responded) {
+          p.responded = true
+          if (p.timer) clearTimeout(p.timer)
+          pendingCalls.delete(exec.agent.id)
+          console.log(`[notify] 模型已主动通知，取消兜底呼叫（${exec.agent.id}）`)
+        }
+      }
+      return { mode, text: text.slice(0, 80) }
     },
     isConcurrencySafe: () => false, // 语音播报必须串行
     timeoutMs: 120000,
