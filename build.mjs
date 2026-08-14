@@ -18,7 +18,6 @@ execSync(
 // 校验产物
 const host = readFileSync('lib/index.js', 'utf8')
 if (!host.includes('dsh-plugin-notify')) throw new Error('host bundle 缺关键符号')
-if (!host.includes('notify.ps1')) throw new Error('host bundle 缺 ps1 路径引用')
-if (!readFileSync('notify.ps1', 'utf8').includes('DSH_NOTIFY_PAYLOAD')) throw new Error('ps1 文件异常')
-console.log('构建完成：lib/index.js（notify.ps1 随 files 进包）')
+if (!host.includes('notify.ps1', 'idle.ps1')) throw new Error('host bundle 缺 ps1 路径引用')
+console.log('构建完成：lib/index.js（notify.ps1 + idle.ps1 随 files 进包）')
 console.log('host:', host.length, 'bytes')

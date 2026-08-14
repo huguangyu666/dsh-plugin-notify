@@ -13,6 +13,7 @@
   "files": [
     "lib",
     "notify.ps1",
+    "idle.ps1",
     "cordis.patch.yml",
     "README.md",
     "LICENSE"

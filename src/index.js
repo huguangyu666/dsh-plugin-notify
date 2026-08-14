@@ -23,10 +23,32 @@ export const inject = ['commands', 'webServer', 'tools', 'systemPrompt']
 
 const PACKAGE_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
 const PS1 = join(PACKAGE_ROOT, 'notify.ps1')
+const IDLE_PS1 = join(PACKAGE_ROOT, 'idle.ps1')
 const DEFAULT_MODE = process.env.DSH_NOTIFY_DEFAULT_MODE || 'toast'
 const VALID_MODES = ['toast', 'speak', 'sound', 'both']
 /** 语音播报最长字符（避免念太久） */
 const SPEAK_MAX_CHARS = 300
+/** 自动叫人：toast 发出后等待用户响应的秒数（期间用户在 dsh 发消息则取消） */
+const CALL_DELAY_SECONDS = Number(process.env.DSH_NOTIFY_CALL_DELAY_SECONDS) || 60
+
+/** 待确认的通知：sessionId -> { summary, responded, timer } */
+const pendingCalls = new Map()
+
+/** 查询系统空闲秒数（用户键盘/鼠标无操作时长） */
+function queryIdle() {
+  try {
+    const r = spawnSync('powershell', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', IDLE_PS1], {
+      encoding: 'utf8',
+      timeout: 15000,
+      windowsHide: true,
+    })
+    if (r.status === 0) {
+      const d = JSON.parse(r.stdout.trim())
+      return Number(d.idle_seconds) || 0
+    }
+  } catch { /* 查询失败按 0 处理（视为用户在） */ }
+  return 0
+}
 
 /** 执行一次通知（同步，spawnSync 调 PowerShell） */
 function notify(mode, title, message) {
@@ -160,10 +182,10 @@ export function apply(ctx) {
     ctx.systemPrompt?.section?.({
       name: 'notify-user-guidance',
       order: 100,
-      text: '你有 notify_user 工具（桌面通知 / 中文语音播报 / 提示音），用于主动联系用户。规则：\n' +
+      text: '你有 notify_user 工具（桌面通知 / 中文语音播报 / 提示音）和 user_activity 工具（查询用户是否在电脑前），用于主动联系用户。规则：\n' +
         '1. 必须：任务出错、或需要用户注意与确认时，立即用 notify_user 通知用户\n' +
-        '2. 必须：完成任务需要多步操作或持续较长时间时，完成后用 notify_user 通知用户结果摘要\n' +
-        '3. 建议：用户可能不在电脑前时（长任务），用 speak 或 both 模式呼叫用户回来\n' +
+        '2. 必须：任务耗时超过约 1 分钟完成时，调用 user_activity 查询用户是否在电脑前；若用户不在（空闲超过 2 分钟），用 notify_user 的 speak 或 both 模式呼叫用户回来，并简述结果\n' +
+        '3. 建议：用户可能不在电脑前时，用 speak 或 both 模式而非仅 toast\n' +
         '4. 例外：几秒就能完成的简单任务无需通知，避免打扰',
     })
   }
@@ -179,8 +201,11 @@ export function apply(ctx) {
     }
   })
 
-  // 兜底：回合结束自动桌面通知（保证"任务完成必然知道"，不依赖模型自觉）。
-  // 可用 DSH_NOTIFY_ON_TURN_END=0 关闭。
+  // 兜底：回合结束自动通知。
+  // 流程：立即 toast → 进入 CALL_DELAY_SECONDS 秒确认窗口 → 期间用户在 dsh
+  // 发了消息（=看到了通知）则取消；没发 → 语音叫人。
+  // 不依赖"用户是否在线"：用电脑没看到 toast 更应该叫（语音打断提醒）。
+  // 开关：DSH_NOTIFY_ON_TURN_END=0 关闭全部。
   if (process.env.DSH_NOTIFY_ON_TURN_END !== '0') {
     ctx.on?.('agent/turn-stopping', (payload) => {
       try {
@@ -194,9 +219,40 @@ export function apply(ctx) {
           }
         }
         const summary = text.trim().slice(0, 200) || `会话 ${agent.id} 的回合已结束`
+
+        // 立即桌面通知
         notify('toast', '任务完成', summary)
+
+        // 确认窗口：等 CALL_DELAY_SECONDS 秒，用户没发消息 → 语音叫人
+        if (process.env.DSH_NOTIFY_AUTO_CALL !== '0') {
+          const sessionId = agent.id
+          const prev = pendingCalls.get(sessionId)
+          if (prev?.timer) clearTimeout(prev.timer)
+          const entry = { summary, responded: false, timer: null }
+          entry.timer = setTimeout(() => {
+            if (!entry.responded) {
+              notify('speak', '任务完成', `任务已经完成了，快回来看看结果吧：${entry.summary.slice(0, 80)}`)
+              console.log(`[notify] 1 分钟未确认，语音呼叫（${sessionId}）`)
+            }
+            pendingCalls.delete(sessionId)
+          }, CALL_DELAY_SECONDS * 1000)
+          pendingCalls.set(sessionId, entry)
+        }
       } catch (e) {
         console.error('[notify] 完成自动通知失败:', e.message)
+      }
+    })
+
+    // 用户在任意会话发了消息 → 视为看到了通知，取消待确认呼叫
+    ctx.on?.('agent/inbox/inserted', (payload) => {
+      if (payload?.message?.source?.kind !== 'user') return
+      for (const [sessionId, entry] of pendingCalls) {
+        if (!entry.responded) {
+          entry.responded = true
+          if (entry.timer) clearTimeout(entry.timer)
+          pendingCalls.delete(sessionId)
+          console.log(`[notify] 用户已互动，取消呼叫（${sessionId}）`)
+        }
       }
     })
   }
@@ -224,6 +280,29 @@ export function apply(ctx) {
     },
     isConcurrencySafe: () => false, // 语音播报必须串行
     timeoutMs: 120000,
+  })
+
+  // agent 工具：查询用户是否在电脑前（模型自主判断"要不要叫人"的依据）
+  ctx.tools?.register?.({
+    name: 'user_activity',
+    description: '查询用户当前是否在电脑前：返回系统键盘/鼠标空闲秒数（0 表示用户正在操作，数值越大表示离开越久）。长任务完成或不确定用户是否在线时使用，判断是否需要主动呼叫用户。',
+    parameters: {
+      type: 'object',
+      properties: {},
+    },
+    output: {
+      schema: { type: 'object', additionalProperties: true, properties: {} },
+      render: (args, value) => {
+        const idle = value?.idle_seconds ?? 0
+        const desc = idle <= 30 ? '用户正在电脑前' : idle <= 180 ? '用户可能短暂离开' : '用户不在电脑前'
+        return [{ type: 'text', text: `系统空闲 ${idle} 秒（${desc}）` }]
+      },
+    },
+    execute: async () => {
+      const idle = queryIdle()
+      return { idle_seconds: idle }
+    },
+    isConcurrencySafe: () => true,
   })
 
   // 命令：/notify
