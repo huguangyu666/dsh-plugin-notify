@@ -16,10 +16,12 @@ import { spawnSync } from 'node:child_process'
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import z from '@deepseek-ai/schemastery'
+import { settingsNamespace } from '@deepseek-ai/dsh-settings'
 
 export const name = 'dsh-plugin-notify'
 
-export const inject = ['commands', 'webServer', 'tools', 'systemPrompt']
+export const inject = ['commands', 'webServer', 'tools', 'systemPrompt', 'settings']
 
 const PACKAGE_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
 const homeDir = process.env.USERPROFILE || process.env.HOME || ''
@@ -33,8 +35,9 @@ const SPEAK_MAX_CHARS = 300
 /** 待确认的通知：sessionId -> { summary, responded, timer } */
 const pendingCalls = new Map()
 
-// ── 配置（~/.dsh/notify/config.json，面板可改；优先级：config.json > 环境变量 > 默认）──
+// ── 配置：优先 dsh 原生设置（ctx.settings，设置界面自动渲染）；回退 config.json / 环境变量 / 默认 ──
 const CONFIG_FILE = join(homeDir, '.dsh', 'notify', 'config.json')
+let _settingsScope = null // apply 时注册的 dsh settings scope
 
 const DEFAULT_TEMPLATES = {
   task_done: '任务已经完成了，快回来看看结果吧',
@@ -46,6 +49,17 @@ let _configCache = null
 
 function loadConfig() {
   if (_configCache) return _configCache
+  // 1. dsh 原生设置（最高优先级）
+  if (_settingsScope) {
+    try {
+      const v = _settingsScope.get()
+      if (v && typeof v === 'object') {
+        _configCache = v
+        return v
+      }
+    } catch { /* 回退 */ }
+  }
+  // 2. config.json + 环境变量 + 默认
   const cfg = {
     defaultMode: process.env.DSH_NOTIFY_DEFAULT_MODE || 'toast',
     callDelaySeconds: Number(process.env.DSH_NOTIFY_CALL_DELAY_SECONDS) || 60,
@@ -59,7 +73,7 @@ function loadConfig() {
     const env = process.env[`DSH_NOTIFY_TEMPLATE_${key.toUpperCase()}`]
     if (env) cfg.templates[key] = env
   }
-  // config.json（面板设置，最高优先级）
+  // config.json（旧面板设置）
   try {
     const d = JSON.parse(readFileSync(CONFIG_FILE, 'utf8'))
     if (typeof d.defaultMode === 'string' && VALID_MODES.includes(d.defaultMode)) cfg.defaultMode = d.defaultMode
@@ -77,7 +91,14 @@ function loadConfig() {
   return cfg
 }
 
-function saveConfig(patch) {
+async function saveConfig(patch) {
+  // 1. dsh 原生设置
+  if (_settingsScope) {
+    await _settingsScope.update(patch)
+    _configCache = null
+    return loadConfig()
+  }
+  // 2. config.json 兜底
   const current = loadConfig()
   const next = {
     defaultMode: patch.defaultMode ?? current.defaultMode,
@@ -341,6 +362,28 @@ async function readBody(req) {
 }
 
 export function apply(ctx) {
+  // 注册 dsh 原生设置命名空间：设置界面（侧边栏设置 → 插件 section）自动渲染表单，
+  // 修改即时生效。注册失败（无 settings provider）时回退 config.json。
+  try {
+    const notifySchema = z.object({
+      defaultMode: z.string().default('toast'),
+      callDelaySeconds: z.number().default(60),
+      onTurnEnd: z.boolean().default(true),
+      autoCall: z.boolean().default(true),
+      boostVolume: z.boolean().default(false),
+      templates: z.object({
+        task_done: z.string().default(DEFAULT_TEMPLATES.task_done),
+        task_error: z.string().default(DEFAULT_TEMPLATES.task_error),
+        call_back: z.string().default(DEFAULT_TEMPLATES.call_back),
+      }).default({}),
+    })
+    _settingsScope = ctx.settings?.register(settingsNamespace('notify'), notifySchema, { applies: 'live' })
+    if (_settingsScope) console.log('[notify] 已注册原生设置（设置界面可配置 notify）')
+  } catch (e) {
+    console.error('[notify] settings 注册失败，回退 config.json:', e.message)
+    _settingsScope = null
+  }
+
   // 系统提示词注入：让 agent 默认就有"主动通知用户"的习惯（不用每次教）。
   // 工具指导区约定 order 100-199；可用 DSH_NOTIFY_INJECT_PROMPT=0 禁用。
   if (process.env.DSH_NOTIFY_INJECT_PROMPT !== '0') {
@@ -542,7 +585,7 @@ export function apply(ctx) {
         }
         if (req.method === 'POST') {
           const body = await readBody(req).catch(() => ({}))
-          const next = saveConfig(body)
+          const next = await saveConfig(body)
           sendJson(res, 200, { ok: true, config: next })
           return
         }
