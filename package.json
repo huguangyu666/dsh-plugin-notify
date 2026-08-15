@@ -1,6 +1,6 @@
 {
   "name": "dsh-plugin-notify",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "DeepSeek Harness 插件：通知出口——agent 通过桌面通知 / 中文语音播报 / 提示音主动联系用户（长任务完成、出错、呼叫用户回来）。Windows 本机零依赖。",
   "type": "module",
   "main": "lib/index.js",
@@ -64,5 +64,8 @@
   "peerDependencies": {
     "@deepseek-ai/dsh": ">=0.1.0-rc.6",
     "react": ">=18.0.0"
+  },
+  "devDependencies": {
+    "esbuild": "^0.28.2"
   }
 }
