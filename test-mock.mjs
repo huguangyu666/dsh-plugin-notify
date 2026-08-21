@@ -4,7 +4,7 @@
  * 2. 模板渲染（scene → 文案，不实际通知）
  * 3. 配置读写（settings API）
  */
-import { mkdirSync, writeFileSync, rmSync } from 'node:fs'
+import { mkdirSync, writeFileSync, rmSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 
 const home = process.env.USERPROFILE || process.env.HOME
@@ -28,6 +28,10 @@ let pass = 0, fail = 0
 const check = (name, ok, extra = '') => {
   if (ok) { pass++; console.log('PASS', name) } else { fail++; console.log('FAIL', name, extra) }
 }
+
+// 0. 回归防护：通知必须异步子进程，不能再用 spawnSync 阻塞 dsh 事件循环
+const hostBundle = readFileSync(new URL('./lib/index.js', import.meta.url), 'utf8')
+check('lib 不含 spawnSync（异步通知，不阻塞事件循环）', !hostBundle.includes('spawnSync'))
 
 // 1. 注册检查
 check('工具 notify_user 注册', tools.has('notify_user'))

@@ -12,7 +12,7 @@
  * 后端：notify.ps1（PowerShell SAPI 离线中文语音 + NotifyIcon 气泡，零外部依赖）
  * 环境变量：DSH_NOTIFY_DEFAULT_MODE（默认通知方式：toast|speak|sound|both，默认 toast）
  */
-import { spawnSync } from 'node:child_process'
+import { spawn } from 'node:child_process'
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -134,14 +134,52 @@ function renderTemplate(tpl, vars = {}) {
   })
 }
 
+/** 异步执行一个子进程，返回 stdout；不阻塞 Node 事件循环 */
+function runProcess(command, args, { timeout = 15000, env } = {}) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(command, args, {
+      windowsHide: true,
+      env: env ? { ...process.env, ...env } : process.env,
+      stdio: ['ignore', 'pipe', 'pipe'],
+    })
+    let stdout = ''
+    let stderr = ''
+    let settled = false
+    const timer = setTimeout(() => {
+      if (settled) return
+      settled = true
+      child.kill()
+      reject(new Error(`${command} 执行超时（${timeout}ms）`))
+    }, timeout)
+    child.stdout.on('data', (d) => { stdout += d.toString() })
+    child.stderr.on('data', (d) => { stderr += d.toString() })
+    child.on('error', (err) => {
+      if (settled) return
+      settled = true
+      clearTimeout(timer)
+      reject(err)
+    })
+    child.on('close', (code) => {
+      if (settled) return
+      settled = true
+      clearTimeout(timer)
+      if (code === 0) {
+        resolve(stdout)
+      } else {
+        const detail = (stderr || stdout).trim().slice(0, 300)
+        reject(new Error(detail || `${command} 退出码 ${code}`))
+      }
+    })
+  })
+}
+
 /** 音量增强：通知前调到最大，返回恢复函数（失败返回 null，不阻塞通知） */
-function volumeBoost() {
+async function volumeBoost() {
   if (!existsSync(VOLUME_PY)) return null
   try {
-    const r = spawnSync('python', [VOLUME_PY, 'boost'], { encoding: 'utf8', timeout: 15000, windowsHide: true })
-    if (r.status !== 0) return null
-    return () => {
-      try { spawnSync('python', [VOLUME_PY, 'restore'], { encoding: 'utf8', timeout: 15000, windowsHide: true }) } catch { /* 忽略恢复失败 */ }
+    await runProcess('python', [VOLUME_PY, 'boost'], { timeout: 15000 })
+    return async () => {
+      try { await runProcess('python', [VOLUME_PY, 'restore'], { timeout: 15000 }) } catch { /* 忽略恢复失败 */ }
     }
   } catch {
     return null
@@ -149,49 +187,48 @@ function volumeBoost() {
 }
 
 /** 查询系统空闲秒数（用户键盘/鼠标无操作时长） */
-function queryIdle() {
+async function queryIdle() {
   try {
-    const r = spawnSync('powershell', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', IDLE_PS1], {
-      encoding: 'utf8',
-      timeout: 15000,
-      windowsHide: true,
-    })
-    if (r.status === 0) {
-      const d = JSON.parse(r.stdout.trim())
-      return Number(d.idle_seconds) || 0
-    }
+    const stdout = await runProcess('powershell', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', IDLE_PS1], { timeout: 15000 })
+    const d = JSON.parse(stdout.trim())
+    return Number(d.idle_seconds) || 0
   } catch { /* 查询失败按 0 处理（视为用户在） */ }
   return 0
 }
 
-/** 执行一次通知（同步，spawnSync 调 PowerShell；开启音量增强时先 boost 再恢复） */
+/** 通知串行队列：语音播报/音量增强必须串行，避免多个通知重叠 */
+let notifyQueue = Promise.resolve()
+
+/**
+ * 执行一次通知（异步非阻塞，内部串行执行 PowerShell；开启音量增强时先 boost 再恢复）。
+ * 返回 Promise<mode>；调用方用 await 或 .catch 处理。
+ */
 function notify(mode, title, message) {
   if (!VALID_MODES.includes(mode)) mode = 'toast'
   let text = String(message ?? '').trim()
-  if (!text) throw new Error('通知内容为空')
+  if (!text) return Promise.reject(new Error('通知内容为空'))
   if ((mode === 'speak' || mode === 'both') && text.length > SPEAK_MAX_CHARS) {
     text = text.slice(0, SPEAK_MAX_CHARS) + '。详细内容请看桌面通知。'
   }
   const payload = Buffer.from(JSON.stringify({ mode, title: String(title ?? 'dsh 通知'), message: text })).toString('base64')
-  if (!existsSync(PS1)) throw new Error(`notify.ps1 不存在: ${PS1}`)
-  // 音量增强：调到最大 → 通知 → 恢复
-  const restore = loadConfig().boostVolume ? volumeBoost() : null
-  try {
-    const r = spawnSync('powershell', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', PS1], {
-      encoding: 'utf8',
-      timeout: 120000,
-      windowsHide: true,
-      env: { ...process.env, DSH_NOTIFY_PAYLOAD: payload, DSH_NOTIFY_SOUND_EFFECT: loadConfig().soundEffect },
-    })
-    if (r.error) throw new Error(`PowerShell 启动失败: ${r.error.message}`)
-    if (r.status !== 0) {
-      const err = (r.stderr || '').trim() || (r.stdout || '').trim()
-      throw new Error(`通知失败: ${err.slice(0, 300)}`)
+  if (!existsSync(PS1)) return Promise.reject(new Error(`notify.ps1 不存在: ${PS1}`))
+
+  const task = notifyQueue.then(async () => {
+    // 音量增强：调到最大 → 通知 → 恢复
+    const restore = loadConfig().boostVolume ? await volumeBoost() : null
+    try {
+      await runProcess('powershell', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', PS1], {
+        timeout: 120000,
+        env: { DSH_NOTIFY_PAYLOAD: payload, DSH_NOTIFY_SOUND_EFFECT: loadConfig().soundEffect },
+      })
+    } finally {
+      if (restore) await restore()
     }
-  } finally {
-    if (restore) restore()
-  }
-  return mode
+    return mode
+  })
+  // 队列吞掉错误，保证后续通知仍能执行
+  notifyQueue = task.then(() => {}, () => {})
+  return task
 }
 
 /** 从原始输入解析模式 flag 与内容 */
@@ -415,6 +452,7 @@ export function apply(ctx) {
       const err = payload?.error
       const detail = String(err?.message ?? err ?? '未知错误').slice(0, 200)
       notify('both', 'dsh 任务出错', `会话 ${payload?.agent?.id ?? ''} 出错：${detail}`)
+        .catch((e) => console.error('[notify] 出错自动通知失败:', e.message))
     } catch (e) {
       console.error('[notify] 出错自动通知失败:', e.message)
     }
@@ -439,8 +477,9 @@ export function apply(ctx) {
         }
         const summary = text.trim().slice(0, 200) || `会话 ${agent.id} 的回合已结束`
 
-        // 立即桌面通知
+        // 立即桌面通知（异步，不阻塞回合停止/用户打断）
         notify('toast', '任务完成', summary)
+          .catch((e) => console.error('[notify] 完成自动通知失败:', e.message))
 
         // 确认窗口：等 CALL_DELAY_SECONDS 秒，用户没发消息 → 语音叫人
         if (loadConfig().autoCall) {
@@ -451,6 +490,7 @@ export function apply(ctx) {
           entry.timer = setTimeout(() => {
             if (!entry.responded) {
               notify('speak', '任务完成', renderTemplate(loadConfig().templates.task_done))
+                .catch((e) => console.error('[notify] 语音呼叫失败:', e.message))
               console.log(`[notify] 1 分钟未确认，语音呼叫（${sessionId}）`)
             }
             pendingCalls.delete(sessionId)
@@ -502,7 +542,7 @@ export function apply(ctx) {
         summary: String(args.summary ?? '').trim(),
         session: '',
       })
-      const mode = notify(args.mode ?? loadConfig().defaultMode, args.title, text)
+      const mode = await notify(args.mode ?? loadConfig().defaultMode, args.title, text)
       // 模型已主动通知 → 取消该系统兜底的待确认呼叫（避免 60 秒后重复叫）
       if (exec?.agent?.id) {
         const p = pendingCalls.get(exec.agent.id)
@@ -536,7 +576,7 @@ export function apply(ctx) {
       },
     },
     execute: async () => {
-      const idle = queryIdle()
+      const idle = await queryIdle()
       return { idle_seconds: idle }
     },
     isConcurrencySafe: () => true,
@@ -553,7 +593,7 @@ export function apply(ctx) {
         return { kind: 'error', text: '用法：/notify <通知内容> [--speak|--sound|--toast]\n例如：/notify --speak 任务完成了，快回来看看' }
       }
       try {
-        const used = notify(mode, 'dsh 通知', text)
+        const used = await notify(mode, 'dsh 通知', text)
         return { kind: 'success', text: `已通知（${used}）：${text.slice(0, 60)}${text.length > 60 ? '…' : ''}` }
       } catch (e) {
         return { kind: 'error', text: `[notify] ${e.message}` }
@@ -576,7 +616,7 @@ export function apply(ctx) {
       try {
         const body = await readBody(req).catch(() => ({}))
         const mode = String(body.mode ?? loadConfig().defaultMode)
-        const used = notify(mode, 'dsh 通知', String(body.text ?? ''))
+        const used = await notify(mode, 'dsh 通知', String(body.text ?? ''))
         sendJson(res, 200, { ok: true, mode: used })
       } catch (e) {
         sendJson(res, 500, { error: e.message })

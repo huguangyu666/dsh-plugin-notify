@@ -130,7 +130,7 @@ npm i dsh-plugin-notify
 
 - 后端是单文件 `notify.ps1`（随包分发），通过环境变量 `DSH_NOTIFY_PAYLOAD` 接收 base64 编码的 JSON（避免命令行中文编码问题）
 - 语音用系统 SAPI：自动选择 `zh-CN` 语音（如 Microsoft Huihui Desktop），无中文语音时回退默认
-- 语音播报同步执行（念完才返回），工具调用串行，超时 120 秒
+- 语音播报在后台子进程执行（不阻塞 dsh 事件循环 / Web UI），等待播完才返回给调用方；通知串行执行，超时 120 秒
 
 ## 开发
 
